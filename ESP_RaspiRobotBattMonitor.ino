@@ -233,6 +233,7 @@ void ThingSpeakDatalog()
   ThingSpeak.setField(3, Batt_Percent_I2C);
   ThingSpeak.setField(4, ChargingInput);
   ThingSpeak.setField(5, LobattAlert);
+  ThingSpeak.setField(6, VoutCharger5V);
 
   // write to the ThingSpeak channel
   int x = ThingSpeak.writeFields(myChannelNumber, myWriteAPIKey);
