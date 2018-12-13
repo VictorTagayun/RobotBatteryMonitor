@@ -29,7 +29,7 @@ int IP5305_Key_pin = 14;
 bool ETA1096_Enable;
 bool CW2015_Enable;
 bool VinCharging5V;
-bool Vout5V;
+bool VoutCharger5V;
 bool IP5305_Key;
 
 float Batt_Voltage_ADC, Batt_Voltage_I2C, Batt_Percent_I2C;
@@ -51,8 +51,26 @@ void setup()
   WiFiMulti.addAP("SingaporePolice", "123Qweasd");
   WiFiMulti.addAP("AntipoloPolice", "TAGAYUNFAMILY");
   WiFiMulti.addAP("VicenteTagayun", "27Author");
+  Serial.println();
+  Serial.println();
+  Serial.print("Wait for WiFi... ");
+  while (WiFiMulti.run() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(500);
+    // need to add cntr timeout
+  }
+  Serial.println("");
+  Serial.print("WiFi connected to : ");
+  Serial.println(WiFi.SSID());
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+
   Blynk.config(auth);
+  // Blynk status
+  // Init the the buttons
+
   ThingSpeak.begin(client);
+  // ThingSpeak status
 
   pinMode(ETA1096_Enable_pin, OUTPUT);
   pinMode(CW2015_Alert_pin, INPUT);
@@ -73,7 +91,7 @@ void setup()
   timer1.setInterval(20000L, ThingSpeakDatalog);
   timer2.setInterval(1000L, Datalog_1S);
 
-  delay(20000);
+  //delay(20000);
 }
 
 void loop()
@@ -233,13 +251,14 @@ void Datalog_1S()
   Batt_Percent_I2C = read_battery_percentage();
   ChargingInput = digitalRead(VinCharging5V_pin);
   LobattAlert = digitalRead(CW2015_Alert_pin);
+  VoutCharger5V = digitalRead(VoutCharger5V_pin);
 
 
   Serial.print("Battery Analog Voltage = ");
   Serial.println(Batt_Voltage_ADC);
   Serial.print("Battery Voltage : ");
   Serial.println(Batt_Voltage_I2C);
-  Serial.print("Battery Ppercentage : ");
+  Serial.print("Battery Percentage : ");
   Serial.println(Batt_Percent_I2C);
 
   if (ChargingInput)
@@ -258,7 +277,7 @@ void Datalog_1S()
     Serial.println("CW2015_Alert_pin low");
   }
 
-  if (digitalRead(VoutCharger5V_pin))
+  if (VoutCharger5V)
   {
     Serial.println("VoutCharger5V_pin high");
   } else
@@ -269,7 +288,7 @@ void Datalog_1S()
   Serial.println("=============");
 }
 
-BLYNK_WRITE(V1) // Charger Output Enable (toggle)
+BLYNK_WRITE(V1) // Boost Output Enable (toggle)
 {
   int pinValue = param.asInt(); // assigning incoming value from pin V1 to a variable
 
@@ -277,24 +296,16 @@ BLYNK_WRITE(V1) // Charger Output Enable (toggle)
   if (pinValue)
   {
     digitalWrite(ETA1096_Enable_pin, HIGH);
+    Serial.println("ETA1096_Enable_pin HIGH");
   } else
   {
     digitalWrite(ETA1096_Enable_pin, LOW);
+    Serial.println("ETA1096_Enable_pin LOW");
   }
 
 }
 
-BLYNK_WRITE(V2) // Charger Output off (20sec low)
-{
-  int pinValue = param.asInt(); // assigning incoming value from pin V1 to a variable
-
-  // process received value
-  digitalWrite(ETA1096_Enable_pin, LOW);
-  delay(20000);
-  digitalWrite(ETA1096_Enable_pin, HIGH);
-}
-
-BLYNK_WRITE(V3) // Charger key (toggle)
+BLYNK_WRITE(V2) // Charger key (toggle)
 {
   int pinValue = param.asInt(); // assigning incoming value from pin V1 to a variable
 
@@ -302,9 +313,25 @@ BLYNK_WRITE(V3) // Charger key (toggle)
   if (pinValue)
   {
     digitalWrite(IP5305_Key_pin, HIGH);
+    Serial.println("IP5305_Key_pin HIGH");
   } else
   {
     digitalWrite(IP5305_Key_pin, LOW);
+    Serial.println("IP5305_Key_pin LOW");
+  }
+}
+
+BLYNK_WRITE(V3) // Charger key Output off (30sec low)
+{
+  int pinValue = param.asInt(); // assigning incoming value from pin V1 to a variable
+
+  // process received value
+  if (pinValue)
+  {
+    digitalWrite(IP5305_Key_pin, LOW);
+    delay(30000);
+    digitalWrite(IP5305_Key_pin, HIGH); // this code powers on again the charger output
+    Serial.println("IP5305_Key_pin (30sec low)");
   }
 }
 
@@ -313,9 +340,13 @@ BLYNK_WRITE(V4) // Charger key (short)
   int pinValue = param.asInt(); // assigning incoming value from pin V1 to a variable
 
   // process received value
-  digitalWrite(IP5305_Key_pin, LOW);
-  delay(100);
-  digitalWrite(IP5305_Key_pin, HIGH);
+  if (pinValue)
+  {
+    digitalWrite(IP5305_Key_pin, LOW);
+    delay(100);
+    digitalWrite(IP5305_Key_pin, HIGH);
+    Serial.println("IP5305_Key_pin (short)");
+  }
 }
 
 BLYNK_WRITE(V5) // Charger key (long)
@@ -323,9 +354,13 @@ BLYNK_WRITE(V5) // Charger key (long)
   int pinValue = param.asInt(); // assigning incoming value from pin V1 to a variable
 
   // process received value
-  digitalWrite(IP5305_Key_pin, LOW);
-  delay(3000);
-  digitalWrite(IP5305_Key_pin, HIGH);
+  if (pinValue)
+  {
+    digitalWrite(IP5305_Key_pin, LOW);
+    delay(3000);
+    digitalWrite(IP5305_Key_pin, HIGH);
+    Serial.println("IP5305_Key_pin (long)");
+  }
 }
 
 BLYNK_WRITE(V6) // Charger key (2 short)
@@ -333,11 +368,15 @@ BLYNK_WRITE(V6) // Charger key (2 short)
   int pinValue = param.asInt(); // assigning incoming value from pin V1 to a variable
 
   // process received value
-  digitalWrite(IP5305_Key_pin, LOW);
-  delay(100);
-  digitalWrite(IP5305_Key_pin, HIGH);
-  delay(700);
-  digitalWrite(IP5305_Key_pin, LOW);
-  delay(100);
-  digitalWrite(IP5305_Key_pin, HIGH);
+  if (pinValue)
+  {
+    digitalWrite(IP5305_Key_pin, LOW);
+    delay(100);
+    digitalWrite(IP5305_Key_pin, HIGH);
+    delay(700);
+    digitalWrite(IP5305_Key_pin, LOW);
+    delay(100);
+    digitalWrite(IP5305_Key_pin, HIGH);
+    Serial.println("IP5305_Key_pin (2 short)");
+  }
 }
