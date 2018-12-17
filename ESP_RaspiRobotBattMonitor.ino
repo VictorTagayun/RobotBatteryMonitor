@@ -8,6 +8,7 @@
 #include <Wire.h>
 #include "ThingSpeak.h"
 #include <EEPROM.h>
+#include <SoftwareSerial.h>
 
 ESP8266WiFiMulti WiFiMulti;
 
@@ -23,56 +24,58 @@ char auth[] = "215df2de13a54c86b54cbb0fcbef1730";
 
 WidgetTerminal terminal(V12);
 
-int ETA1096_Enable_pin = 3;
-int CW2015_Alert_pin = 15;
-int VinCharging5V_pin = 13;
-int VoutCharger5V_pin = 12;
-int IP5305_Key_pin = 14;
-int Rpi_Tx_pin = 3;
-int Tx_pin = 1;
+int Charger_key_pin = 14;
+int ChargerVout_pin  = 12;
+int Vin_pin = 13;
+int Rpi_Tx_pin = 15;
+int Serial1_pin = 2;
+int Boost_enable_pin  = 0;
+int SoftwareSerialRpiCmd_pin = 3;
+int Buzzer_pin = 1;
 int Counter_100msec;
 
-bool ETA1096_Enable;
-bool CW2015_Enable;
-bool I2C_enable = true;
-bool VinCharging5V;
-bool VoutCharger5V;
-bool IP5305_Key;
+bool Charger_key_enable;
+bool ChargerVout_enable;
+bool Vin_enable;
+bool Rpi_Tx_enable;
+bool Boost_enable;
+
 bool command_sent;
-bool Rx;
-bool Rpi_Tx;
 bool first_power_on = true;
 bool Counter_1sec_stat;
 bool charger_output_off_stat;
 bool sudo_halt_stat;
 bool serial_enable;
+bool I2C_enable = true;
 bool terminal_enable;
 
 char power_stat;
 float Batt_Voltage_ADC, Batt_Voltage_I2C, Batt_Percent_I2C;
 int ChargingInput, LobattAlert;
+int reset_cntr;
 
 BlynkTimer timerSerialDatalog_3s, timerThingSpeakDatalog, timerCheckInputSignals, timerCheckCommandSent, timer_100msec;
+
+SoftwareSerial RpiSerialCmd(SW_SERIAL_UNUSED_PIN, SoftwareSerialRpiCmd_pin); // RX, TX
 
 void setup()
 {
   // Check eeprom last saved power stat
-  EEPROM.begin(1);
-  read_power_stat();
+  EEPROM.begin(2);
+
+  // read_power_stat
 
   Wire.begin();
 
-  Serial.begin(115200);
-  Serial.swap(); // Serial.set_tx(2); // 
-  Serial.println("pi");
-  delay(1000);
-  Serial.println("dwango");
-  delay(1000);
-  Serial.println("2778kulitlikotvj");
-
   Serial1.begin(115200);
 
-  //Serial.swap();
+  // raspi login
+  RpiSerialCmd.begin(115200);
+  RpiSerialCmd.println("pi");
+  delay(1000);
+  RpiSerialCmd.println("dwango");
+  delay(1000);
+  RpiSerialCmd.println("2778kulitlikotvj");
 
   //   We start by connecting to a WiFi network
   WiFi.mode(WIFI_STA);
@@ -102,33 +105,15 @@ void setup()
   terminal.clear();
 
   ThingSpeak.begin(client);
-  // ThingSpeak status
 
-  //  pinMode(ETA1096_Enable_pin, OUTPUT);
-  //  pinMode(IP5305_Key_pin, OUTPUT);
-  //  pinMode(CW2015_Alert_pin, INPUT);
-  //  pinMode(VinCharging5V_pin, INPUT);
-  //  pinMode(VoutCharger5V_pin, INPUT);
-  //  pinMode(Tx_pin, INPUT);
+  pinMode(Charger_key_pin, OUTPUT);
+  pinMode(ChargerVout_pin, INPUT);
+  pinMode(Vin_pin, INPUT);
+  pinMode(Rpi_Tx_pin, INPUT);
+  pinMode(Boost_enable_pin, OUTPUT);
+  pinMode(Buzzer_pin, OUTPUT);
 
   // check current raspi stat
-  //  if (digitalRead(ETA1096_Enable_pin))
-  //  {
-  //    digitalWrite(ETA1096_Enable_pin, HIGH);
-  //    while (!digitalRead(VoutCharger5V))
-  //    {
-  //      charger_key_2_short();
-  //      //      Serial.println("charger_key_2_short");
-  //      delay(3000);
-  //    }
-  //  } else
-  //  {
-  //    digitalWrite(ETA1096_Enable_pin, LOW);
-  //    digitalWrite(IP5305_Key_pin, LOW);
-  //  }
-
-
-  //  Blynk.begin(auth, ssid, pass);
 
   OTA();
 
@@ -139,20 +124,18 @@ void setup()
   timerSerialDatalog_3s.setInterval(3000L, SerialDatalog_3s);
   timer_100msec.setInterval(100L, Count_100msec);
 
-  //delay(20000);
 }
 
 void loop()
 {
   Blynk.run();
-  if (1) // serial_enable
-  {
-    timerSerialDatalog_3s.run();
-    timerThingSpeakDatalog.run(); // Initiates BlynkTimer
-  }
+  timerSerialDatalog_3s.run();
+  timerThingSpeakDatalog.run(); // Initiates BlynkTimer
   timer_100msec.run();
 
   ArduinoOTA.handle();
+
+  // check Vin_enable = high and VoutCharger_pin = low, then is it not charging
 }
 
 float ReadAnalogBattLevel()
@@ -166,12 +149,12 @@ float ReadAnalogBattLevel()
   return BattValueFloat;
 }
 
-float read_battery_voltage()
+float i2c_read_battery_voltage() // add comm error
 {
   float battery_voltage;
   char batt_lsb, batt_msb;
   int result;
-  bool error_read_battery_voltage = false;
+  int error_cntr;
 
   Wire.beginTransmission(0x62);
   Wire.write(byte(0x02));
@@ -180,6 +163,7 @@ float read_battery_voltage()
   if (result != 1) {
     Serial1.print("batt_msb nok : ");
     Serial1.println(result, HEX);
+    error_cntr++;
   }
   batt_msb = Wire.read(); // receive a byte as character
 
@@ -192,21 +176,25 @@ float read_battery_voltage()
   if (result != 1) {
     Serial1.print("batt_lsb nok : ");
     Serial1.println(result, HEX);
+    error_cntr++;
   }
   batt_lsb = Wire.read(); // receive a byte as character
 
   battery_voltage += batt_lsb;
   battery_voltage = battery_voltage * 305 / 1000000;
 
-  return battery_voltage;
+  if (error_cntr == 0)
+    return battery_voltage;
+  else
+    return 0;
 }
 
-float read_battery_percentage()
+float i2c_read_battery_percentage() // add comm error
 {
   float battery_percentage;
   char percent_lsb, percent_msb;
   int result;
-  bool error_read_battery_percentage = false;
+  int error_cntr;
 
   Wire.beginTransmission(0x62);
   Wire.write(byte(0x04));
@@ -232,7 +220,10 @@ float read_battery_percentage()
 
   battery_percentage += (float(percent_lsb) / 256);
 
-  return battery_percentage;
+  if (error_cntr == 0)
+    return battery_percentage;
+  else
+    return 0;
 }
 
 char read_version()
@@ -283,9 +274,9 @@ void ThingSpeakDatalog()
   ThingSpeak.setField(1, Batt_Voltage_ADC);
   ThingSpeak.setField(2, Batt_Voltage_I2C);
   ThingSpeak.setField(3, Batt_Percent_I2C);
-  ThingSpeak.setField(4, ChargingInput);
-  ThingSpeak.setField(5, LobattAlert);
-  ThingSpeak.setField(6, VoutCharger5V);
+  ThingSpeak.setField(4, Vin_enable);
+  ThingSpeak.setField(5, ChargerVout_enable);
+  ThingSpeak.setField(6, Boost_enable);
 
   // write to the ThingSpeak channel
   int x = ThingSpeak.writeFields(myChannelNumber, myWriteAPIKey);
@@ -302,19 +293,19 @@ void SerialDatalog_3s()
   Batt_Voltage_ADC = ReadAnalogBattLevel();
   if (I2C_enable)
   {
-    Batt_Voltage_I2C = read_battery_voltage();
-    Batt_Percent_I2C = read_battery_percentage();
+    Batt_Voltage_I2C = i2c_read_battery_voltage();
+    Batt_Percent_I2C = i2c_read_battery_percentage();
     Serial1.println(">>>>>>>>>>>>> I2C enabled");
   } else
   {
     Serial1.println(">>>>>>>>>>>>> I2C disabled");
   }
-  ChargingInput = digitalRead(VinCharging5V_pin);
-  LobattAlert = digitalRead(CW2015_Alert_pin);
-  VoutCharger5V = digitalRead(VoutCharger5V_pin);
-  ETA1096_Enable = digitalRead(ETA1096_Enable_pin);
-  IP5305_Key = digitalRead(IP5305_Key_pin);
-  Rpi_Tx = digitalRead(Rpi_Tx_pin);
+
+  Charger_key_enable = digitalRead(Charger_key_pin);
+  ChargerVout_enable = digitalRead(ChargerVout_pin);
+  Vin_enable = digitalRead(Vin_pin);
+  Rpi_Tx_enable = digitalRead(Rpi_Tx_pin);
+  Boost_enable = digitalRead(Boost_enable_pin);
 
   Serial1.print("Battery Analog Voltage = ");
   Serial1.println(Batt_Voltage_ADC);
@@ -323,52 +314,44 @@ void SerialDatalog_3s()
   Serial1.print("Battery Percentage     = ");
   Serial1.println(Batt_Percent_I2C);
 
-  if (ChargingInput)
+  if (Charger_key_enable)
   {
-    Serial1.println("VinCharging5V_pin  HIGH");
+    Serial1.println("Charger_key   HIGH");
   } else
   {
-    Serial1.println("VinCharging5V_pin  LOW");
+    Serial1.println("Charger_key   LOW");
   }
 
-  if (LobattAlert)
+  if (ChargerVout_enable)
   {
-    Serial1.println("CW2015_Alert_pin   HIGH");
+    Serial1.println("ChargerVout   HIGH");
   } else
   {
-    Serial1.println("CW2015_Alert_pin   LOW");
+    Serial1.println("ChargerVout   LOW");
   }
 
-  if (VoutCharger5V)
+  if (Vin_enable)
   {
-    Serial1.println("VoutCharger5V_pin  HIGH");
+    Serial1.println("Vin           HIGH");
   } else
   {
-    Serial1.println("VoutCharger5V_pin  LOW");
+    Serial1.println("Vin           LOW");
   }
 
-  if (ETA1096_Enable)
+  if (Rpi_Tx_enable)
   {
-    Serial1.println("ETA1096_Enable_pin HIGH");
+    Serial1.println("Rpi_Tx_enable HIGH");
   } else
   {
-    Serial1.println("ETA1096_Enable_pin LOW");
+    Serial1.println("Rpi_Tx_enable LOW");
   }
 
-  if (IP5305_Key)
+  if (Boost_enable)
   {
-    Serial1.println("IP5305_Key_pin     HIGH");
+    Serial1.println("Boost_enable  HIGH");
   } else
   {
-    Serial1.println("IP5305_Key_pin     LOW");
-  }
-
-  if (Rx)
-  {
-    Serial1.println("Rpi_Tx_pin         HIGH");
-  } else
-  {
-    Serial1.println("Rpi_Tx_pin         LOW");
+    Serial1.println("Boost_enable  LOW");
   }
 
   Serial1.println("===============================");
@@ -381,12 +364,12 @@ BLYNK_WRITE(V1) // Boost Output Enable (toggle)
   // process received value
   if (pinValue)
   {
-    digitalWrite(ETA1096_Enable_pin, HIGH);
-    Serial1.println(">>>>>>>>>>>>>>> ETA1096_Enable_pin HIGH");
+    digitalWrite(Boost_enable_pin , HIGH);
+    Serial1.println(">>>>>>>>>>>>>>> Boost_enable; HIGH");
   } else
   {
-    digitalWrite(ETA1096_Enable_pin, LOW);
-    Serial1.println(">>>>>>>>>>>>>>> ETA1096_Enable_pin LOW");
+    digitalWrite(Boost_enable_pin, LOW);
+    Serial1.println(">>>>>>>>>>>>>>> Boost_enable; LOW");
   }
 }
 
@@ -397,12 +380,12 @@ BLYNK_WRITE(V2) // Charger key (toggle)
   // process received value
   if (pinValue)
   {
-    digitalWrite(IP5305_Key_pin, HIGH);
-    Serial1.println(">>>>>>>>>>>>>>> IP5305_Key_pin HIGH");
+    digitalWrite(Charger_key_pin, HIGH);
+    Serial1.println(">>>>>>>>>>>>>>> Charger_key_pin HIGH");
   } else
   {
-    digitalWrite(IP5305_Key_pin, LOW);
-    Serial1.println(">>>>>>>>>>>>>>> IP5305_Key_pin LOW");
+    digitalWrite(Charger_key_pin, LOW);
+    Serial1.println(">>>>>>>>>>>>>>> Charger_key_pin LOW");
   }
 }
 
@@ -413,8 +396,8 @@ BLYNK_WRITE(V3) // Charger key Output off (30sec low)
   // process received value
   if (pinValue)
   {
-    digitalWrite(IP5305_Key_pin, LOW);
-    Serial1.println(">>>>>>>>>>>>>>> IP5305_Key_pin (30sec LOW)");
+    digitalWrite(Charger_key_pin, LOW);
+    Serial1.println(">>>>>>>>>>>>>>> Charger_key_pin (30sec LOW)");
     Counter_100msec = 0;
     charger_output_off_stat = true;
   }
@@ -424,10 +407,10 @@ void charger_output_off()
 {
   if (charger_output_off_stat)
   {
-    if (Counter_100msec == 30)
+    if (Counter_100msec == 300)
     {
-      digitalWrite(IP5305_Key_pin, HIGH); // this code powers on again the charger output
-      Serial1.println(">>>>>>>>>>>>>>> IP5305_Key_pin 30 secs HIGH");
+      digitalWrite(Charger_key_pin, HIGH); // this code powers on again the charger output
+      Serial1.println(">>>>>>>>>>>>>>> Charger_key_pin 30 secs HIGH");
       charger_output_off_stat = false;
     }
   }
@@ -440,10 +423,10 @@ BLYNK_WRITE(V4) // Charger key (short)
   // process received value
   if (pinValue)
   {
-    digitalWrite(IP5305_Key_pin, LOW);
+    digitalWrite(Charger_key_pin, LOW);
     BlynkDelay(100);
-    digitalWrite(IP5305_Key_pin, HIGH);
-    Serial1.println(">>>>>>>>>>>>>>> IP5305_Key_pin (short)");
+    digitalWrite(Charger_key_pin, HIGH);
+    Serial1.println(">>>>>>>>>>>>>>> Charger_key_pin (short)");
   }
 }
 
@@ -460,10 +443,10 @@ BLYNK_WRITE(V5) // Charger key (long)
 
 void charger_key_long()
 {
-  digitalWrite(IP5305_Key_pin, LOW);
+  digitalWrite(Charger_key_pin, LOW);
   BlynkDelay(3000);
-  digitalWrite(IP5305_Key_pin, HIGH);
-  Serial1.println(">>>>>>>>>>>>>>> IP5305_Key_pin (long)");
+  digitalWrite(Charger_key_pin, HIGH);
+  Serial1.println(">>>>>>>>>>>>>>> Charger_key_pin (long)");
 }
 
 BLYNK_WRITE(V6) // Charger key (2 short)
@@ -479,14 +462,14 @@ BLYNK_WRITE(V6) // Charger key (2 short)
 
 void charger_key_2_short()
 {
-  digitalWrite(IP5305_Key_pin, LOW);
+  digitalWrite(Charger_key_pin, LOW);
   BlynkDelay(100);
-  digitalWrite(IP5305_Key_pin, HIGH);
+  digitalWrite(Charger_key_pin, HIGH);
   BlynkDelay(700);
-  digitalWrite(IP5305_Key_pin, LOW);
+  digitalWrite(Charger_key_pin, LOW);
   BlynkDelay(100);
-  digitalWrite(IP5305_Key_pin, HIGH);
-  Serial1.println(">>>>>>>>>>>>>>> IP5305_Key_pin (2 short)");
+  digitalWrite(Charger_key_pin, HIGH);
+  Serial1.println(">>>>>>>>>>>>>>> Charger_key_pin (2 short)");
 }
 
 BLYNK_WRITE(V7) // Sudo Halt
@@ -496,31 +479,33 @@ BLYNK_WRITE(V7) // Sudo Halt
   // process received value
   if (pinValue)
   {
-    //    Serial.println(">>>>>>>>>>>>>>> Sudo Halt");
-    Serial1.println("sudo poweroff"); // did not restart
-    Serial1.println("sudo halt");
+    Serial1.println(">>>>>>>>>>>>>>> Sudo Halt");
+    RpiSerialCmd.println("sudo poweroff"); // did not restart
+    RpiSerialCmd.println("sudo halt");
     // Serial.println("sudo shutdown"); // did not restart, but need to wait for 1minute to shutdown
-    //    Counter_100msec = 0;
-    //    sudo_halt_stat = true;
-    //    I2C_enable = false;
+    Counter_100msec = 0;
+    sudo_halt_stat = true;
+    I2C_enable = false;
   }
 }
 
-void SudoHaltCmd()
+void SudoHaltCmd() // read rpitx then off boost enable pin
 {
   if (sudo_halt_stat)
   {
-    if (digitalRead(Tx_pin)) // change to timer
+    Rpi_Tx_enable = digitalRead(Rpi_Tx_pin);
+    if (Rpi_Tx_enable) // change to timer
     {
-      Counter_100msec = 0 ;
+      Counter_100msec = 0; // keep reset
+      Serial1.println(">>>>>>>>>>>>>>> Rpi_Tx_pin_enable = HIGH"); // test if serial can power on raspi
     }  else
     {
-      if (Counter_100msec == 100)
+      if (Counter_100msec == 100) // 10secs
       {
-        digitalWrite(ETA1096_Enable_pin, LOW);
+        digitalWrite(Boost_enable_pin, LOW);
         sudo_halt_stat = false;
         I2C_enable = true;
-        Serial1.println(">>>>>>>>>>>>>>> ETA1096_Enable_pin = LOW"); // test if serial can power on raspi
+        Serial1.println(">>>>>>>>>>>>>>> Boost_enable_pin = LOW"); // test if serial can power on raspi
       }
     }
   }
@@ -533,11 +518,11 @@ BLYNK_WRITE(V8) // raspi login
   // process received value
   if (pinValue)
   {
-    Serial1.println("pi"); // did not restart
+    RpiSerialCmd.println("pi"); // did not restart
     delay(1000);
-    Serial1.println("dwango");
+    RpiSerialCmd.println("dwango");
     delay(1000);
-    Serial1.println("2778kulitlikotvj");
+    RpiSerialCmd.println("2778kulitlikotvj");
   }
 }
 
@@ -600,20 +585,21 @@ BLYNK_WRITE(V12)
   // Ensure everything is sent
   terminal.flush();
 }
+
 void ChargerOutOnOff(bool On_Off)
 {
   if (On_Off) // power on charger output
   {
-    VoutCharger5V = digitalRead(VoutCharger5V_pin);
-    while (VoutCharger5V)
+    ChargerVout_enable = digitalRead(ChargerVout_pin);
+    while (ChargerVout_enable)
     {
       charger_key_2_short();
       BlynkDelay(3000);
     }
   } else // power off charger output
   {
-    digitalWrite(IP5305_Key_pin, LOW);
-    Serial1.println(">>>>>>>>>>>>>>> IP5305_Key_pin = LOW");
+    digitalWrite(Charger_key_pin, LOW);
+    Serial1.println(">>>>>>>>>>>>>>> Charger_pin = LOW");
   }
 }
 
@@ -659,14 +645,14 @@ void save_power_stat()
 
 void read_power_stat()
 {
-  power_stat = EEPROM.read(0);
+  power_stat = EEPROM.read(1);
 }
 
 void Count_100msec()
 {
   Counter_100msec++;
-  //  Serial.print("Counter_1sec : ");
-  //  Serial.println(Counter_1sec);
+  //  Serial.print("Counter_100msec : ");
+  //  Serial.println(Counter_100msec);
   charger_output_off();
   SudoHaltCmd();
 }
